@@ -1,0 +1,17 @@
+# Alias manifest for examples/multi_version_stress.py.
+#
+# Each alias maps a unique name (the one the script imports) to a
+# (distribution, version, wheel_tag) triple in the vault. Bubble's
+# meta_finder serves each alias from its own vault path under its own
+# sys.modules key, so the same Python interpreter holds two click
+# universes and two markdown universes simultaneously.
+#
+# If `bubble vault list` shows a different wheel_tag than py3-none-any
+# for any of these (e.g. py2.py3-none-any), update the entry below to
+# match what you actually fetched.
+
+[aliases]
+click_v7    = { name = "click",    version = "7.1.2", wheel_tag = "py3-none-any" }
+click_v8    = { name = "click",    version = "8.1.7", wheel_tag = "py3-none-any" }
+markdown_v3 = { name = "markdown", version = "3.4.4", wheel_tag = "py3-none-any" }
+markdown_v5 = { name = "markdown", version = "3.5.2", wheel_tag = "py3-none-any" }
