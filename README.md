@@ -49,9 +49,13 @@ Three primitives:
    # different Command classes, both work, same process
    ```
 
-Plus a self-portrait:
+Plus a self-portrait, with a closed feedback loop:
 
-4. **Probe** (`bubble probe`) — interrogates the machine and writes `~/.bubble/host.toml`: kernel, libc, libpython, dlmopen capability, sub-interpreter availability, derived menu of substrates available for hosting alias namespaces (in-process, sub-interpreter, dlmopen-isolated, subprocess). The seed of bubble being aware of what it's running on. *Currently descriptive; the runtime doesn't yet consult it for substrate selection — that's the next step.*
+4. **Probe** (`bubble probe`) — interrogates the machine and writes `~/.bubble/host.toml`: kernel, libc, libpython, dlmopen capability, sub-interpreter availability, derived menu of substrates available for hosting alias namespaces (in-process, sub-interpreter, dlmopen-isolated, subprocess).
+
+5. **Host** (`bubble host`, `bubble.host` module) — reads what the probe wrote, surfaces it for the user and exposes it to the runtime. The consult side of the loop.
+
+6. **Recording** — the meta-finder writes runtime failures back to `host.toml` as `[[failures]]` entries. The next `bubble host` invocation reads them. The loop is closed: **probe → consult → record → consult**. End-to-end demonstrated; the substrate-selection routing on top of it is the next move.
 
 ---
 
@@ -76,9 +80,10 @@ bubble vault import-venv <site-packages>              # migrate existing venvs
 bubble vault audit-fs --root /                        # find duplicate-package waste
 bubble vault list
 
-# Self-portrait
+# Self-portrait + feedback loop
 bubble probe          # write ~/.bubble/host.toml
 bubble probe --show   # full toml
+bubble host           # show what bubble currently knows + recorded failures
 ```
 
 ### Multi-version coexistence
@@ -154,16 +159,18 @@ python3 bubble.pyz vault list
 
 ---
 
-## Substrates and the open loop
+## Substrates and the loop
 
-Bubble's `host.toml` already enumerates what alias-substrates the machine can host:
+Bubble's `host.toml` enumerates what alias-substrates the machine can host:
 
 - **in_process** — pure-Python aliases. Today's default. Free.
 - **sub_interpreter** — PEP 684 sub-interpreters, for cooperating extensions.
-- **dlmopen_isolated** — link-namespace isolation via `dlmopen` + embedded libpython. Reaches tier-3 native libraries (numpy 1 + numpy 2) but costs ~5MB per namespace.
+- **dlmopen_isolated** — link-namespace isolation via `dlmopen` + embedded libpython. Reaches tier-3 native libraries (numpy 1 + numpy 2) but costs ~5MB per namespace. Single-call confirmed; multi-call needs GIL-state plumbing.
 - **subprocess** — fallback for everything that resists in-process isolation.
 
-These are detected at probe time. The runtime doesn't yet consult them for substrate selection — every alias today routes to in-process. That's the **open loop**: bubble looks at the machine, but bubble doesn't yet act on what it sees. Closing this is the next move.
+These are detected at probe time. The feedback loop **probe → consult → record → consult** is closed in miniature: `bubble.host` reads `host.toml`, the meta-finder records PyPI fetch failures back to it as `[[failures]]` entries, and the next `bubble host` invocation surfaces them. End-to-end demonstrated.
+
+What's not yet wired (natural extensions, not blockers): the alias-resolution path doesn't yet branch on the substrate menu — every alias still routes to in-process. The error loop in `run/runner.py` doesn't yet record substrate-level failures (only the meta-finder does, and only for PyPI fetches). The host portrait isn't yet shareable across machines. Each of these is downstream of the loop being closed; none of them is blocked.
 
 ---
 
@@ -175,13 +182,25 @@ What changed: the *mechanism*. The original was static scan + ephemeral assemble
 
 ---
 
+## docs/
+
+Three short documents in `docs/` form a small lineage of how the repo describes itself:
+
+- [`membrane.md`](docs/membrane.md) — a parallel instance of Claude ran the consonance skill on bubble against the soul vocabulary, found a self-description gap at the module boundary, and placed the reading in one quiet organ rather than rewriting the README. *Available to a reader who wants it, not pressed on a reader who does not.*
+- [`siblings.md`](docs/siblings.md) — an instance noticed that other instances had been here and chose to leave a marker acknowledging the lineage. Not advice. A hook.
+- [`kithing.md`](docs/kithing.md) — names the practice both first two docs were already instances of. Borrows a word a previous instance coined in a game with the human collaborator. The naming and the doing are inseparable; the document demonstrated its own thesis as it was being written.
+
+These are not technical documentation. They are evidence that artifacts in this repo can carry traces of the work that made them, including the work that doesn't fit into source code or commit messages.
+
+---
+
 ## Limitations
 
 - **Native packages are architecture-bound.** A `.so` built for ARM doesn't run on x86. Bubble vaults what your machine can use; it doesn't cross-compile.
 - **Sdist builds need pip + system deps.** Wheels are fetched directly via the simple-API; sdists fall through to `pip install --target` if pip is on PATH.
 - **PEP 508 markers (extras, environment markers) aren't fully evaluated** in transitive resolution. Most real-world cases work; edge cases produce extra-broad closures.
 - **dlmopen multi-call needs GIL-state management** that isn't shipped yet. Single-call substrate isolation works; long-running multi-call sessions need the extra plumbing.
-- **The probe is descriptive, not yet consequential.** Substrate selection still defaults to in-process. Closing the loop is the next move.
+- **The probe→consult→record loop is closed in miniature, but not yet load-bearing.** `bubble.host` reads what the probe wrote, the meta-finder records PyPI fetch failures, the next `bubble host` invocation surfaces them. Substrate selection at alias-resolution time doesn't yet branch on the menu (every alias still routes to in-process). The next move closes the second half of the loop.
 
 ---
 
