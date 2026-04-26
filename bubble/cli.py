@@ -205,6 +205,33 @@ def cmd_shell_exec(args: argparse.Namespace) -> int:
     return shell_mod.exec_in(args.name, args.cmd)
 
 
+def cmd_probe(args: argparse.Namespace) -> int:
+    """bubble probe — interrogate the machine, write host.toml."""
+    from . import probe
+    config.ensure_dirs()
+    results = probe.run_all()
+    out_path = probe.host_toml_path()
+    probe.write(out_path, results)
+    if args.show:
+        print(out_path.read_text())
+    else:
+        # Brief summary
+        sub_names = [s["name"] + (f" [{s['status']}]") for s in results["substrates"]]
+        print(f"  wrote {out_path}")
+        print(f"  kernel:    {results['kernel']['system']} {results['kernel']['release']} {results['kernel']['machine']}")
+        print(f"  libc:      {results['libc'].get('variant')} {results['libc'].get('version', '')}")
+        print(f"  python:    {results['python']['version']} ({results['python']['executable']})")
+        print(f"  shared:    {results['python']['shared']}")
+        print(f"  dlmopen:   {results['dlmopen'].get('available')}")
+        print(f"  embed:     {results['libpython_embeddable'].get('embeddable')}")
+        print(f"  sub-int:   {results['subinterpreters'].get('available')}")
+        print(f"  substrates available:")
+        for s in results["substrates"]:
+            cost = f"~{s['cost_mb']}MB" if s.get("cost_mb") is not None else "n/a"
+            print(f"    • {s['name']:<22} cost={cost:<8} {s['status']}")
+    return 0
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """bubble run <script.py> — demand-paged execution.
 
@@ -420,6 +447,13 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--prerelease", action="store_true")
     up.add_argument("--verbose", "-v", action="store_true")
     up.set_defaults(func=cmd_up)
+
+    # probe — write host.toml self-portrait
+    pr = sub.add_parser("probe",
+        help="interrogate the machine; write ~/.bubble/host.toml")
+    pr.add_argument("--show", action="store_true",
+                    help="print the full toml after writing")
+    pr.set_defaults(func=cmd_probe)
 
     # run — demand-paged execution, no materialized bubble
     run = sub.add_parser("run",
