@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.dylib
+*.pyd
+
+# Build / dist artifacts
+build/
+dist/
+*.egg-info/
+
+# bubble runtime state — vault belongs to the user, not the repo
+.bubble/
+~/.bubble/
+
+# Editor / OS noise
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Local snapshots and scratch
+*.pre-redesign
+.scratch/
