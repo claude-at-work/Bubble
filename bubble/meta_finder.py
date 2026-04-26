@@ -216,6 +216,7 @@ class VaultFinder(importlib.abc.MetaPathFinder):
 
     def _fault_to_pypi(self, name: str) -> Optional[Path]:
         from .scanner.py import IMPORT_TO_DIST
+        from . import host
         dist = IMPORT_TO_DIST.get(name, name)
         if self._verbose:
             extra = f" (dist={dist})" if dist != name else ""
@@ -227,9 +228,13 @@ class VaultFinder(importlib.abc.MetaPathFinder):
             if self._verbose:
                 sys.stderr.write(f"[bubble] fetch failed: {exc}\n")
             self._fetch_failed.add(name)
+            host.record_failure("pypi_fetch_failed", dist,
+                                f"{type(exc).__name__}: {exc}")
             return None
         if not result:
             self._fetch_failed.add(name)
+            host.record_failure("pypi_no_compatible_release", dist,
+                                f"import_name={name}")
             return None
         return self._lookup(name)
 

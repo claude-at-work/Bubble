@@ -1,263 +1,105 @@
 # BUBBLE
 
-**Ephemeral Dependency Isolation**
+**Demand-paged dependency isolation for Python.**
 
-Run any script in an isolated environment. No dependency conflicts. No version hell. No network required after the first vault.
+A content-addressed package vault, plus a meta-path finder that intercepts unresolved imports and serves them from the vault — fetching from PyPI on miss. No venv. No requirements file. The script declares what it needs by importing it.
 
 ```
-bubble vault add requests
-bubble up my_script.py
+bubble run script.py
 ```
 
-That's it. The script runs. The bubble dissolves. Next script gets a clean slate.
+That's it. First run pages from PyPI; subsequent runs hit the warm vault. Lockfiles are recordings of what actually loaded, not declarations of what might. Multiple versions of the same package can coexist in one process via aliases.
 
 ---
 
 ## What is this?
 
-Bubble solves dependency hell by going atomic. Instead of managing environments (virtualenv, conda, nvm), it:
+Bubble started as ephemeral per-script environments — scan the script, vault what it needs, assemble a symlink tree, run, dissolve. The vision in [the original architecture](#what-stayed-from-the-original) was always module-level isolation: `requests.sessions` from 2.28 in one bubble, `requests.sessions` from 2.33 in another, same machine, no conflict.
 
-1. **Vaults** packages at the module level — not whole packages, individual files
-2. **Scans** your script to find what it needs
-3. **Bubbles** up an isolated environment with only those modules
-4. **Dissolves** when done — no state pollution
+The current shape gets there more directly. Instead of pre-assembling per-script bubbles, the imports themselves trigger the resolution. Bubble is **demand paging for Python imports**:
 
-Each bubble is isolated. `requests.sessions` from 2.28 in one bubble. `requests.sessions` from 2.33 in another. Same machine, no conflict.
+- vault is the backing store
+- Python's import machinery is the MMU
+- `ModuleNotFoundError` is the page fault
+- `fetch_into_vault` is the fault handler
+- PEP 503 normalization is the address-translation layer
 
----
-
-## The Problem
-
-You've been here:
-
-```
-Project A needs requests>=2.28
-Project B needs requests<2.28
-→ Dependency conflict. Choose one. The other breaks.
-```
-
-Traditional package managers manage the conflict. Bubble **avoids** it by isolating at the module level.
-
-You've also been here:
-
-```
-Your machine: x86_64, Ubuntu
-Your phone: aarch64, Termux
-→ Native packages compiled for x86 won't run on ARM.
-```
-
-Bubble vaults what *you* have. If it works on your machine, it works in the bubble. Architecture-specific packages stay architecture-specific.
+The same vision, a more direct mechanism.
 
 ---
 
-## How it works
+## The shape
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        BUBBLE                               │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   VAULT          SCANNER         BUBBLE                     │
-│   ─────          ───────         ──────                     │
-│   packages       imports         isolated                   │
-│   modules        deps            environment                │
-│   metadata                       run + retry                │
-│                                                             │
-│   ~/.bubble/vault/              ~/.bubble/bubbles/<id>/     │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+Three primitives:
 
-**Three layers:**
+1. **Vault** (`~/.bubble/vault/`) — content-addressed package store keyed by `(name, version, wheel_tag)`. Atomic writes via staging+rename. SQLite index. Every package's top-level import names are indexed so `import yaml` resolves to the vault's `pyyaml` entry.
 
-1. **Vault** — Local cache of packages, unpacked at module level. `~/.bubble/vault/`
-2. **Scanner** — Static import analysis + dependency graph resolution
-3. **Bubble** — Ephemeral sandbox assembled from vault fragments
+2. **Meta-path finder** (`bubble.meta_finder.VaultFinder`) — sits on `sys.meta_path`. Intercepts top-level import misses, looks up the name in the vault, hands a path to the standard `PathFinder`. Optionally fetches from PyPI on vault miss. Optionally records the closure as a lockfile.
 
-**The error loop:**
+3. **Aliases** — first-class declarations that two namespaces can hold different versions of the same package.
 
-Static analysis can't catch everything (dynamic imports, conditional imports). So bubble uses a retry loop:
+   ```
+   [aliases]
+   click_old = { name = "click", version = "7.1.2", wheel_tag = "py3-none-any" }
+   click_new = { name = "click", version = "8.3.2", wheel_tag = "py3-none-any" }
+   ```
 
-1. Run the script
-2. Catch `ModuleNotFoundError`
-3. Pull the missing module from vault (or download it)
-4. Retry
+   ```python
+   import click_old, click_new
+   # different Command classes, both work, same process
+   ```
 
-Python tells you what it needs. You don't need perfect foresight.
+Plus a self-portrait:
+
+4. **Probe** (`bubble probe`) — interrogates the machine and writes `~/.bubble/host.toml`: kernel, libc, libpython, dlmopen capability, sub-interpreter availability, derived menu of substrates available for hosting alias namespaces (in-process, sub-interpreter, dlmopen-isolated, subprocess). The seed of bubble being aware of what it's running on. *Currently descriptive; the runtime doesn't yet consult it for substrate selection — that's the next step.*
 
 ---
 
-## Installation
+## What works today
 
 ```bash
-# No dependencies. Stdlib only.
-cp bubble.py /usr/local/bin/bubble
-chmod +x /usr/local/bin/bubble
+# Demand-paged execution. From a cold vault, populates from PyPI live.
+bubble run script.py --isolate
+bubble run script.py --isolate --lock script.lock     # record what actually loaded
 
-# Or just run it directly
-python3 bubble.py --help
-```
+# Explicit version pinning + multi-version aliases via scope manifest
+bubble run script.py --scope versions.toml
 
----
+# Persistent named environments — symlink trees over the vault, ~2KB each
+bubble shell create dev requests pyyaml rich
+bubble shell exec dev -- python3 my_tool.py
+bubble shell list
 
-## Quick Start
-
-```bash
-# Cache a package
-bubble vault add requests
-
-# See what's vaulted
+# Vault management
+bubble vault get <package> [--version V]              # fetch from PyPI
+bubble vault import-venv <site-packages>              # migrate existing venvs
+bubble vault audit-fs --root /                        # find duplicate-package waste
 bubble vault list
 
-# Run a script in isolation
-bubble up my_script.py
-
-# Run and keep the bubble for inspection
-bubble up my_script.py --keep
-
-# Clean up
-bubble down --all
+# Self-portrait
+bubble probe          # write ~/.bubble/host.toml
+bubble probe --show   # full toml
 ```
 
----
+### Multi-version coexistence
 
-## Commands
+Confirmed: three `click` versions side-by-side in one process. Distinct `Command` classes. Each invokable.
 
-### `bubble vault add <package>`
+Confirmed-with-pattern: `pydantic` v1 + v2, asymmetric (one default + one alias). Tier-2 libraries that don't do absolute self-imports inside metaclasses work cleanly.
 
-Download and cache a package. Use `--version` for a specific version, `--recursive` for dependencies.
+Demonstrated-as-reachable: `numpy` 1.26 + `numpy` 2.4 in one process via dlmopen + isolated libpython (kernel/glibc machinery, not a Python feature). Single-call works; multi-call needs GIL-state management — sketched, not yet shipped.
 
-```bash
-bubble vault add requests
-bubble vault add requests --version 2.31.0
-bubble vault add numpy --recursive
-bubble vault add npm:lodash          # npm packages
+### Recorded lockfiles
+
+A run with `--lock script.lock` writes the closure that *actually loaded*. No separate `bubble lock` command. Reproducibility comes from observation, not declaration.
+
 ```
-
-### `bubble vault list`
-
-Show all vaulted packages.
-
-### `bubble vault index`
-
-Rebuild the module index (run after manually adding packages).
-
-### `bubble scan <script>`
-
-Analyze a script's dependencies without running it.
-
-```bash
-bubble scan my_script.py
-bubble scan my_script.py --resolve   # also check against vault
-bubble scan ./my_project/             # scan a directory
+# bubble lockfile — recorded from a real run
+requests        requests        2.33.1   py3-none-any
+urllib3         urllib3         2.6.3    py3-none-any
+yaml            pyyaml          6.0.3    cp313-cp313-manylinux2014_aarch64
+...
 ```
-
-### `bubble up <script>`
-
-Spin up a bubble, run the script, dissolve.
-
-```bash
-bubble up my_script.py
-bubble up my_script.py --keep        # keep bubble after run
-bubble up my_script.py arg1 arg2     # pass arguments
-bubble up ./my_project/               # package directory
-```
-
-### `bubble down`
-
-Dissolve bubbles.
-
-```bash
-bubble down          # dissolve oldest bubble
-bubble down --all    # dissolve all bubbles
-```
-
-### `bubble doctor`
-
-Diagnose your environment. Shows Python version, platform, vault status, and path shim health.
-
----
-
-## Offline First
-
-After the initial vault, everything runs offline:
-
-```bash
-# On a connected machine
-bubble vault add requests --recursive
-bubble vault add numpy --recursive
-
-# Copy ~/.bubble to offline machine
-cp -r ~/.bubble /path/to/airgapped/
-
-# Run scripts offline
-bubble up my_script.py   # No network needed
-```
-
----
-
-## Termux / Android / proot
-
-Bubble handles non-standard filesystem layouts:
-
-```bash
-bubble doctor
-# ├─ Path shims: 8/8 resolvable
-# │
-# │   /etc/ssl/certs → /data/data/com.termux/files/usr/etc/tls/cert.pem
-# │   /usr/lib → /usr/lib/aarch64-linux-gnu
-# │   ...
-```
-
-The path shim layer bridges Termux, proot, and Alpine to where packages expect things to be.
-
----
-
-## Module-Level Indexing
-
-The vault doesn't just store packages — it indexes every module:
-
-```bash
-bubble vault list
-#   requests         2.31.0    pure       2024-01-15
-#   numpy            1.26.0    native     2024-01-15
-#
-# Total: 2 packages (1 native, 1 pure)
-```
-
-When a script imports `requests.sessions`, bubble pulls only the modules needed, not the whole `requests` package. Smaller bubbles, faster assembly.
-
----
-
-## The Error Loop
-
-Static analysis misses things. Dynamic imports, `importlib.import_module()`, conditional imports. Bubble catches these at runtime:
-
-```python
-# This script will work even though the import is dynamic
-import importlib
-mod = importlib.import_module('some_package')  # bubble catches the error
-```
-
-1. Scan finds static imports → vault those
-2. Run → catch `ModuleNotFoundError`
-3. Pull missing module → retry
-4. Repeat until clean
-
----
-
-## Database Schema
-
-The vault uses SQLite for indexing:
-
-```sql
-packages        -- name, version, vault_path, has_native
-modules         -- package, version, module_name, module_path
-dependencies    -- package, version, dep_name, dep_version_spec
-module_imports  -- package, version, module_name, imports, imports_external
-```
-
-Location: `~/.bubble/vault.db`
 
 ---
 
@@ -265,42 +107,89 @@ Location: `~/.bubble/vault.db`
 
 ```
 ~/.bubble/
-├── vault/              # Unpacked packages
-│   ├── requests/
-│   │   └── 2.31.0/
-│   │       ├── requests/
-│   │       │   ├── __init__.py
-│   │       │   ├── sessions.py
-│   │       │   └── ...
-│   │       └── requests-2.31.0.dist-info/
-│   └── numpy/
-│       └── 1.26.0/
-├── bubbles/            # Active ephemeral environments
-│   └── a1b2c3d4e5f6/
-│       ├── lib/        # Python modules (symlinked)
-│       │   └── requests -> ~/.bubble/vault/requests/2.31.0/requests
-│       ├── node_modules/  # JS modules (for npm)
-│       └── sysroot/    # Path shims
-├── wheels/             # Downloaded packages (temporary)
-├── logs/               # Diagnostic logs
-└── vault.db           # SQLite index
+├── vault/                  # content-addressed store
+│   └── <name>/<version>/<wheel_tag>/<unpacked>
+├── shells/                 # persistent named environments (symlinks)
+│   └── <name>/{lib,bin,activate,manifest.toml}
+├── bubbles/                # ephemeral per-script bubbles (legacy path)
+├── wheels/                 # transient downloads
+├── vault.db                # SQLite index
+└── host.toml               # the self-portrait — what bubble learned about this machine
 ```
+
+```
+bubble/
+├── config.py           paths, host detection
+├── vault/
+│   ├── db.py           schema (packages, top_level, dependencies, modules, shells)
+│   ├── store.py        atomic add via staging+rename
+│   ├── metadata.py     parse METADATA + WHEEL, PEP 503 normalization
+│   ├── importer.py    `bubble vault import-venv`
+│   └── fetcher.py      stdlib-only PyPI client (urllib + json + zipfile)
+├── scanner/
+│   ├── py.py           AST scanner; uses sys.stdlib_module_names
+│   └── resolver.py     resolve-against-vault, fetch-missing
+├── run/
+│   ├── assemble.py     symlink tree (legacy, for ephemeral bubbles)
+│   ├── runner.py       error-loop fallback (legacy)
+│   └── shell.py        long-lived bubbles, scope+alias parsing
+├── meta_finder.py      the demand-paging primitive
+├── probe.py            host self-portrait
+└── cli.py              vault | shell | run | up | probe
+```
+
+Ships as a single `bubble.pyz` zipapp via stdlib `zipapp`. ~217KB. No third-party dependencies.
+
+---
+
+## Installation
+
+```bash
+# Single artifact, drop and go
+cp bubble.pyz /usr/local/bin/bubble && chmod +x /usr/local/bin/bubble
+
+# Or run as a Python module
+python3 bubble.pyz vault list
+```
+
+---
+
+## Substrates and the open loop
+
+Bubble's `host.toml` already enumerates what alias-substrates the machine can host:
+
+- **in_process** — pure-Python aliases. Today's default. Free.
+- **sub_interpreter** — PEP 684 sub-interpreters, for cooperating extensions.
+- **dlmopen_isolated** — link-namespace isolation via `dlmopen` + embedded libpython. Reaches tier-3 native libraries (numpy 1 + numpy 2) but costs ~5MB per namespace.
+- **subprocess** — fallback for everything that resists in-process isolation.
+
+These are detected at probe time. The runtime doesn't yet consult them for substrate selection — every alias today routes to in-process. That's the **open loop**: bubble looks at the machine, but bubble doesn't yet act on what it sees. Closing this is the next move.
+
+---
+
+## What stayed from the original
+
+The vault concept. Module-level addressing of packages. Path shims for Termux/proot environments. SQLite as the index. The "agents need to run code without getting trapped in dependency loops" framing. The README's original thesis was right and load-bearing throughout.
+
+What changed: the *mechanism*. The original was static scan + ephemeral assembled bubbles. The current is demand-paged imports + alias namespaces. Same destination, more direct route. The original ephemeral pipeline (`bubble up`) is still in the package, retired in practice.
 
 ---
 
 ## Limitations
 
-- **Native packages are architecture-bound** — A `.so` compiled for ARM won't run on x86. Vault on the target architecture.
-- **Post-install scripts don't run** — Packages with setup hooks may need manual setup.
-- **Some packages need system deps** — `libxml2`, `openssl`, etc. Install those separately.
+- **Native packages are architecture-bound.** A `.so` built for ARM doesn't run on x86. Bubble vaults what your machine can use; it doesn't cross-compile.
+- **Sdist builds need pip + system deps.** Wheels are fetched directly via the simple-API; sdists fall through to `pip install --target` if pip is on PATH.
+- **PEP 508 markers (extras, environment markers) aren't fully evaluated** in transitive resolution. Most real-world cases work; edge cases produce extra-broad closures.
+- **dlmopen multi-call needs GIL-state management** that isn't shipped yet. Single-call substrate isolation works; long-running multi-call sessions need the extra plumbing.
+- **The probe is descriptive, not yet consequential.** Substrate selection still defaults to in-process. Closing the loop is the next move.
 
 ---
 
 ## Why this exists
 
-Built for autonomous agents that need to run code without getting trapped in dependency loops. The agent doesn't need perfect knowledge — it just needs to handle errors gracefully.
+Built for autonomous agents that need to run code without getting trapped in dependency loops. Built for constrained environments (Termux, embedded, airgapped) where you can't `pip install` on demand and architecture mismatches are common.
 
-Also built for constrained environments (Termux, embedded, airgapped) where you can't `pip install` on demand and architecture mismatches are common.
+The deeper why: a Python program today is bounded by what its package manager can put in one site-packages. That's a *semantic ceiling* on what programs you can write. Two libraries that can't share a numpy version can't share a process — even though most of the time they don't actually pass numpy arrays to each other. Bubble names the boundary that's already there in practice and makes it manageable. The diamond conflict stops being a problem when you stop pretending the diamond was ever flat.
 
 ---
 
@@ -312,4 +201,4 @@ MIT
 
 ## Credits
 
-Built in one session. Stdlib only. No frameworks. Just Python being Python.
+Built across two sessions, in dialogue. Stdlib only. No frameworks. The README's original vision held; the implementation caught up.

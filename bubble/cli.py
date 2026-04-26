@@ -205,6 +205,45 @@ def cmd_shell_exec(args: argparse.Namespace) -> int:
     return shell_mod.exec_in(args.name, args.cmd)
 
 
+def cmd_host(args: argparse.Namespace) -> int:
+    """bubble host — show what bubble knows about this machine.
+
+    The consult side of the probe→consult→record loop. Reads ~/.bubble/host.toml
+    that the probe wrote, plus any failures recorded by the runtime since.
+    """
+    from . import host
+    portrait = host.load()
+    if not portrait:
+        print("no host portrait yet — run `bubble probe` to write one")
+        return 1
+
+    print(f"  probed_at:      {portrait.get('probed_at', '-')}")
+    print(f"  bubble_version: {portrait.get('bubble_version', '-')}")
+    if "kernel" in portrait:
+        k = portrait["kernel"]
+        print(f"  kernel:         {k.get('system','?')} {k.get('release','?')} {k.get('machine','?')}")
+    if "libc" in portrait:
+        l = portrait["libc"]
+        print(f"  libc:           {l.get('variant','?')} {l.get('version','')}")
+    print()
+    print("  substrates:")
+    for s in portrait.get("substrates", []):
+        cost = f"~{s['cost_mb']}MB" if s.get("cost_mb") else "n/a"
+        print(f"    • {s.get('name',''):<22} cost={cost:<8} {s.get('status','')}")
+    failures = portrait.get("failures", [])
+    if failures:
+        print()
+        print(f"  observed failures ({len(failures)}):")
+        for f in failures[-10:]:  # last 10
+            print(f"    × [{f.get('kind','?')}] {f.get('target','?')}")
+            if f.get("detail"):
+                print(f"      {f['detail'][:140]}")
+    else:
+        print()
+        print("  no runtime failures recorded yet")
+    return 0
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     """bubble probe — interrogate the machine, write host.toml."""
     from . import probe
@@ -454,6 +493,11 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--show", action="store_true",
                     help="print the full toml after writing")
     pr.set_defaults(func=cmd_probe)
+
+    # host — show what bubble currently knows (consult side of the loop)
+    h = sub.add_parser("host",
+        help="show what bubble knows about this machine + recorded failures")
+    h.set_defaults(func=cmd_host)
 
     # run — demand-paged execution, no materialized bubble
     run = sub.add_parser("run",
