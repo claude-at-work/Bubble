@@ -269,8 +269,8 @@ def _read_manifest(shell_dir: Path) -> dict:
 
 
 def shell_dir(name: str) -> Path:
-    if not re.match(r"^[A-Za-z0-9_\-]+$", name):
-        raise ValueError(f"shell names must be [A-Za-z0-9_-]+, got {name!r}")
+    if not re.match(r"^[A-Za-z0-9_\-]{1,64}$", name):
+        raise ValueError(f"shell names must be [A-Za-z0-9_-]+ up to 64 chars, got {name!r}")
     return config.SHELLS_DIR / name
 
 
@@ -281,6 +281,8 @@ def _link_package(shell_lib: Path, vault_path: Path, pkg_name: str) -> list[str]
     Whole-package symlinks (data files come along for free).
     Returns list of importable names linked.
     """
+    if not store.is_under_vault(vault_path):
+        raise ValueError(f"refusing to link from outside the vault: {vault_path}")
     linked = []
     shell_lib.mkdir(parents=True, exist_ok=True)
     for entry in vault_path.iterdir():

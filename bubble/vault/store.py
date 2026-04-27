@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import uuid
@@ -20,9 +21,32 @@ from .. import config
 from . import db
 
 
+# Strict allowlist for vault path segments. PEP 503 names are alnum/./-/_;
+# wheel tags use the same plus '+'. Reject anything else, including null bytes.
+_VAULT_SEG_RE = re.compile(r"^[A-Za-z0-9._+-]{1,128}$")
+
+
+def _safe_segment(s: str, kind: str) -> str:
+    if not _VAULT_SEG_RE.match(s):
+        raise ValueError(f"unsafe vault {kind!r}: {s!r}")
+    return s
+
+
 def vault_path_for(name: str, version: str, wheel_tag: str) -> Path:
-    safe = lambda s: s.replace("/", "_").replace("..", "_")
-    return config.VAULT_DIR / safe(name) / safe(version) / safe(wheel_tag)
+    return (config.VAULT_DIR
+            / _safe_segment(name, "name")
+            / _safe_segment(version, "version")
+            / _safe_segment(wheel_tag, "wheel_tag"))
+
+
+def is_under_vault(path: Path) -> bool:
+    """Confirm a path resolves inside VAULT_DIR. Use before linking from a DB-supplied path."""
+    try:
+        resolved = Path(path).resolve()
+        vault_root = config.VAULT_DIR.resolve()
+    except OSError:
+        return False
+    return resolved == vault_root or vault_root in resolved.parents
 
 
 def has(conn: sqlite3.Connection, name: str, version: str, wheel_tag: str) -> bool:
@@ -43,10 +67,11 @@ def find_versions(conn: sqlite3.Connection, name: str) -> list[tuple[str, str, s
 
 
 def stage_dir() -> Path:
-    """Allocate a fresh staging directory."""
-    config.STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    """Allocate a fresh staging directory. 0o700 — package payloads can include
+    files users wouldn't expect to be world-readable (tokens in dist-info, etc)."""
+    config.STAGING_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     p = config.STAGING_DIR / uuid.uuid4().hex
-    p.mkdir(parents=True)
+    p.mkdir(mode=0o700)
     return p
 
 

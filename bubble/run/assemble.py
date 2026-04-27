@@ -39,7 +39,16 @@ def assemble(plan: ResolutionPlan, target_dir: Path) -> BubbleEnv:
     lib.mkdir(parents=True, exist_ok=True)
     bin_.mkdir(parents=True, exist_ok=True)
 
+    # Resolve once, then check each resolved.vault_path against it. Avoids a
+    # syscall per package on top of the iterdir() we'd be doing anyway.
+    from .. import config
+    vault_root = config.VAULT_DIR.resolve()
     for resolved in plan.resolved.values():
+        rp = Path(resolved.vault_path).resolve()
+        if rp != vault_root and vault_root not in rp.parents:
+            raise ValueError(
+                f"refusing to assemble from outside the vault: {resolved.vault_path}"
+            )
         for entry in resolved.vault_path.iterdir():
             if entry.name.endswith(".dist-info") or entry.name.endswith(".data"):
                 continue

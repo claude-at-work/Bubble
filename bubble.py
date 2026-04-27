@@ -2263,6 +2263,25 @@ def _index_dependencies(name, version, vault_path):
 # NPM VAULT — Layer 1 for Node.js
 # ─────────────────────────────────────────────
 
+# Allowlist of npm registry hosts we'll fetch tarballs from. Refuses MITM
+# / poisoned-mirror responses that try to redirect tarball_url to file:// or
+# an attacker-controlled host.
+_NPM_ALLOWED_TARBALL_HOSTS = frozenset({
+    "registry.npmjs.org",
+    "registry.npmjs.com",
+})
+
+
+def _npm_tarball_url_ok(url):
+    """Validate that an npm registry-supplied tarball URL is https and on a known host."""
+    import urllib.parse
+    try:
+        parts = urllib.parse.urlparse(url)
+    except ValueError:
+        return False
+    return parts.scheme == "https" and parts.hostname in _NPM_ALLOWED_TARBALL_HOSTS
+
+
 def npm_vault_add(package_name, version=None):
     """Download an npm package tarball directly from the registry — no npm binary, no lockfile."""
     import urllib.request
@@ -2302,6 +2321,9 @@ def npm_vault_add(package_name, version=None):
     if not tarball_url:
         print(f"  ✗ No tarball URL in registry metadata")
         return False
+    if not _npm_tarball_url_ok(tarball_url):
+        print(f"  ✗ Refusing tarball URL from registry: {tarball_url}")
+        return False
 
     # ── Step 2: Download tarball directly ───────────────────────────────────
     dl_dir = WHEELS_DIR / f"npm_{package_name.replace('/', '_').replace('@', '')}_dl"
@@ -2326,9 +2348,19 @@ def npm_vault_add(package_name, version=None):
     has_native = False
     try:
         with tarfile.open(tarball_path, 'r:gz') as tf:
-            tf.extractall(pkg_vault_dir)
-            has_native = any(n.endswith(('.node', '.gyp')) for n in tf.getnames())
-    except tarfile.TarError as e:
+            # filter='data' rejects unsafe members on 3.12+; we also pre-scan
+            # so the failure mode is explicit on older runtimes. Walk the
+            # member list once and reuse it for both validation and has_native.
+            members = tf.getmembers()
+            for member in members:
+                n = member.name
+                if n.startswith('/') or '..' in Path(n).parts or '\x00' in n:
+                    raise ValueError(f"unsafe tar member: {n!r}")
+                if member.issym() or member.islnk():
+                    raise ValueError(f"link member not permitted: {n!r}")
+            has_native = any(m.name.endswith(('.node', '.gyp')) for m in members)
+            tf.extractall(pkg_vault_dir, filter='data')
+    except (tarfile.TarError, ValueError) as e:
         print(f"  ✗ Extraction failed: {e}")
         shutil.rmtree(dl_dir, ignore_errors=True)
         return False
