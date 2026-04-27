@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import urllib.error
@@ -29,6 +30,15 @@ from . import db, store, metadata as meta
 
 
 PYPI_INDEX = os.environ.get("BUBBLE_PYPI_INDEX", "https://pypi.org/simple")
+# An http index lets a network attacker rewrite the simple-API JSON, choosing
+# both the wheel URL and its sha256 — sha verification then succeeds against
+# the attacker-supplied hash. The download-host allowlist below cannot save
+# us if the index itself is cleartext, so reject at module load.
+if not PYPI_INDEX.startswith("https://"):
+    raise ValueError(
+        f"BUBBLE_PYPI_INDEX must use https:// (got {PYPI_INDEX!r}); "
+        "an http index can serve attacker-chosen sha256 values"
+    )
 USER_AGENT = f"bubble/0.3.0 (+stdlib; python {sys.version_info.major}.{sys.version_info.minor})"
 
 
@@ -248,6 +258,28 @@ def _download(url: str, dest: Path, expected_sha256: str) -> Path:
     return dest
 
 
+# Setuid, setgid, and world/group-writable bits would be privilege-escalation
+# vectors if they survived a wheel install. CPython's zipfile.extractall does
+# not currently preserve unix mode bits, but that's an implementation detail —
+# wheels store mode bits in external_attr and a future zipfile change, or a
+# different extraction path, could surface them. Strip defensively after every
+# extraction so the invariant doesn't depend on extractall's behavior.
+_UNSAFE_MODE_BITS = stat.S_ISUID | stat.S_ISGID | stat.S_IWGRP | stat.S_IWOTH
+
+
+def _strip_unsafe_modes(root: Path) -> None:
+    """Remove setuid/setgid/world-and-group-writable bits from every file under root."""
+    for dirpath, _dirs, files in os.walk(root):
+        for f in files:
+            p = os.path.join(dirpath, f)
+            try:
+                mode = os.stat(p).st_mode
+                if mode & _UNSAFE_MODE_BITS:
+                    os.chmod(p, mode & ~_UNSAFE_MODE_BITS)
+            except OSError:
+                pass
+
+
 def _safe_extract_zip(zf: zipfile.ZipFile, dest: Path) -> None:
     """Reject zip-slip / absolute-path / symlink members before extraction.
     Uses the 3.12+ data filter when available; otherwise validates members manually."""
@@ -263,6 +295,7 @@ def _safe_extract_zip(zf: zipfile.ZipFile, dest: Path) -> None:
         if dest_resolved != target and dest_resolved not in target.parents:
             raise ValueError(f"archive member escapes target: {name!r}")
     zf.extractall(dest)
+    _strip_unsafe_modes(dest)
 
 
 def fetch_into_vault(

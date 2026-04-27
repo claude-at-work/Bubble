@@ -2,8 +2,23 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Optional
+
+
+# Names that flow into PyPI URL construction must be PEP 503-shaped: a letter
+# or digit followed by letters, digits, ``.``, ``_``, ``-``. Validating at the
+# trust boundary closes the gap where a name captured from a dynamic-import
+# error string or an attacker-controlled __init__.py would otherwise reach
+# urllib unchecked. Cap at 128 chars; PyPI's longest published name is ~60.
+_SAFE_DIST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,127}$")
+
+
+def is_safe_dist_name(name: str) -> bool:
+    """True iff `name` is shaped like a legal PEP 503 distribution name.
+    Used as a pre-fetch trust gate so URL/path construction never sees junk."""
+    return bool(_SAFE_DIST_NAME.match(name))
 
 
 def parse_metadata(text: str) -> dict:
@@ -92,5 +107,4 @@ def name_version_from_dist_info(dist_info_dir: Path) -> Optional[tuple[str, str]
 
 def normalize_name(name: str) -> str:
     """PEP 503 name normalization."""
-    import re
     return re.sub(r"[-_.]+", "-", name).lower()

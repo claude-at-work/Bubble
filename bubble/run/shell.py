@@ -36,6 +36,11 @@ from ..vault import db, store, metadata as meta
 
 _SPEC_RE = re.compile(r"^([A-Za-z0-9_.\-]+)(?:==(.+))?$")
 
+# Entry-point script names come from entry_points.txt inside a wheel —
+# fully attacker-controlled at vault-add time. A name like ``../../../.bashrc``
+# would otherwise write a shell-executable wrapper outside the shell's bin/.
+_SAFE_SCRIPT_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$")
+
 
 def parse_spec(spec: str) -> tuple[str, Optional[str]]:
     """Parse 'requests' or 'requests==2.31.0'. PEP 440 ranges not yet supported."""
@@ -304,6 +309,8 @@ def _link_entry_points(shell_bin: Path, vault_path: Path, python: str) -> list[s
     shell_bin.mkdir(parents=True, exist_ok=True)
     written = []
     for script_name, module, attr in _entry_points_for(vault_path):
+        if not _SAFE_SCRIPT_NAME.match(script_name):
+            continue
         wrapper = shell_bin / script_name
         if wrapper.exists():
             wrapper.unlink()

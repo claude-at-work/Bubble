@@ -49,6 +49,12 @@ def _copy_into_stage(
         src = site_packages / rel
         if not src.exists() or src.is_dir():
             continue
+        # In hardlink mode, os.link follows symlinks by default — a RECORD
+        # entry pointing at /etc/shadow would land its inode in the vault.
+        # Skip symlinks unconditionally: in copy mode follow_symlinks=False
+        # already handled them safely; this just makes both paths consistent.
+        if src.is_symlink():
+            continue
         dst = staged / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         try:

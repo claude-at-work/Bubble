@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .assemble import BubbleEnv
-from ..vault import db, fetcher
+from ..vault import db, fetcher, metadata as meta
 from ..scanner import resolver as resolver_mod, py as scanner_py
 
 
@@ -54,6 +54,12 @@ def run(env: BubbleEnv, cmd: list[str], *,
             return proc.returncode
 
         missing_import = m.group(1).split(".")[0]
+        if not meta.is_safe_dist_name(missing_import):
+            sys.stderr.write(proc.stderr)
+            sys.stderr.write(
+                f"\n  refusing to fetch unsafe module name: {missing_import!r}\n"
+            )
+            return proc.returncode
         if verbose:
             print(f"  ⤷ dynamic import detected: {missing_import}", file=sys.stderr)
         dist_name = scanner_py.IMPORT_TO_DIST.get(missing_import, missing_import)

@@ -217,7 +217,21 @@ class VaultFinder(importlib.abc.MetaPathFinder):
     def _fault_to_pypi(self, name: str) -> Optional[Path]:
         from .scanner.py import IMPORT_TO_DIST
         from . import host
+        from .vault.metadata import is_safe_dist_name
+        # Trust-gate the import name before it flows into urllib URL building
+        # in fetch_simple_index. Junk names (unicode tricks, quoting, traversal)
+        # never become URL path components.
+        if not is_safe_dist_name(name):
+            self._fetch_failed.add(name)
+            if self._verbose:
+                sys.stderr.write(
+                    f"[bubble] refusing to fetch unsafe module name: {name!r}\n"
+                )
+            return None
         dist = IMPORT_TO_DIST.get(name, name)
+        if not is_safe_dist_name(dist):
+            self._fetch_failed.add(name)
+            return None
 
         # Cross-run memory. _fetch_failed holds the in-process view; host.toml
         # holds the persistent view. Without this read the function records
