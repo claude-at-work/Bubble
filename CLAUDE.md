@@ -4,102 +4,115 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Bubble** is an ephemeral dependency isolation tool written in pure Python (stdlib only, no external dependencies). It runs Python and Node.js scripts in isolated environments without dependency conflicts by vaulting packages at the module level.
+**Bubble** is a content-addressed package vault plus a meta-path finder that serves Python imports out of the vault on demand. Pure Python, stdlib only, no external dependencies. The README is the canonical description of what bubble does today.
 
 ## Architecture
 
-### Three-Layer Design
+The live codebase is the `bubble/` package. The original monolith is preserved in `legacy/` (see `legacy/README.md`); nothing in `bubble/` imports from it.
 
-1. **VAULT** (`~/.bubble/vault/`) — Local cache of packages unpacked at module level, indexed by SQLite (`vault.db`)
-2. **SCANNER** — AST-based import extraction for Python, regex-based for JavaScript. Maps `IMPORT_TO_PACKAGE` (e.g., `PIL` → `Pillow`)
-3. **BUBBLE** — Ephemeral environment created via symlinks from vault. Implements error loop: catch `ModuleNotFoundError`, pull missing module, retry
+### `bubble/` — the live package
 
-### Directory Structure
+```
+bubble/
+├── cli.py              # entry: vault | shell | run | up | probe | host
+├── meta_finder.py      # VaultFinder on sys.meta_path; alias loaders
+├── config.py           # paths, runner-tag detection, ensure_dirs
+├── probe.py            # write ~/.bubble/host.toml self-portrait
+├── host.py             # read host.toml; record runtime failures back
+├── vault/
+│   ├── db.py           # schema v2 (PK = name + version + wheel_tag)
+│   ├── store.py        # atomic stage→rename, vault path validation
+│   ├── fetcher.py      # JSON Simple-API client (urllib + zipfile, no pip)
+│   ├── metadata.py     # METADATA/WHEEL parsers, PEP 503 normalization
+│   └── importer.py     # `bubble vault import-venv`
+├── scanner/
+│   ├── py.py           # AST-based Python import scanner
+│   └── resolver.py     # match an ImportSet against the vault; fetch missing
+└── run/
+    ├── assemble.py     # ephemeral bubble assembly (`bubble up`, retired)
+    ├── runner.py       # error-loop fallback for dynamic imports
+    └── shell.py        # long-lived named shells; lib/bin/activate/manifest
+```
+
+### Vault layout on disk
 
 ```
 ~/.bubble/
-├── vault/              # Unpacked packages (source, not wheels)
-│   └── requests/2.31.0/requests/...
-├── bubbles/            # Active ephemeral environments
-│   └── <id>/lib/requests -> vault symlink
-├── wheels/             # Downloaded packages (temporary)
-├── logs/               # Diagnostic logs
-└── vault.db            # SQLite index
+├── vault/<name>/<version>/<wheel_tag>/<unpacked>
+├── shells/<name>/{lib,bin,activate,manifest.toml}
+├── bubbles/<id>/                # ephemeral, dissolved after `up`
+├── wheels/                      # transient downloads
+├── vault.db                     # SQLite, schema v2
+└── host.toml                    # probe portrait + recorded failures
 ```
 
-### Database Schema
+### Database schema (v2)
 
 ```sql
-packages        -- name, version, vault_path, has_native, cached_at
-modules         -- package, version, module_name, module_path, size_bytes
-dependencies    -- package, version, dep_name, dep_version_spec, optional
-module_imports   -- package, version, module_name, imports, imports_external
+packages         -- PK (name, version, wheel_tag); sha256, source, vault_path, has_native
+top_level        -- import_name → (package, version, wheel_tag); the import-name → dist-name bridge
+dependencies     -- per-package deps                       (FK → packages)
+modules          -- per-package module index               (FK → packages)
+module_imports   -- per-module import lists                (FK → packages)
+shells           -- long-lived named bubbles
+bubbles          -- ephemeral bubbles (legacy path)
+schema_meta      -- version sentinel
 ```
-
-### Main Files
-
-- `bubble.py` — Core engine (~2790 lines), contains all logic. Run directly with `python3 bubble.py`
-- `bubble_cli.py` — Simple CLI wrapper (v0.1.0)
-- `bubble_cli-1.py` — Enhanced CLI with progress UI (v0.2.0)
-
-### Key Components (in bubble.py)
-
-- `ImportScanner(ast.NodeVisitor)` — AST visitor extracting imports from Python source
-- `PATH_SHIMS` — Dictionary mapping expected paths to actual locations for proot/Termux compatibility (SSL certs, resolv.conf, lib dirs)
-- `IMPORT_TO_PACKAGE` — Maps import names to PyPI package names (e.g., `PIL` → `Pillow`, `cv2` → `opencv-python`)
-- `STDLIB_MODULES` / `NODE_BUILTINS` — Sets of stdlib modules that never need vaulting
 
 ## Commands
 
-### bubble.py (core engine)
-
 ```bash
-python3 bubble.py --help
+# vault
+python3 -m bubble vault list
+python3 -m bubble vault get <package> [--version V] [--prerelease] [--overwrite]
+python3 -m bubble vault import-venv <site-packages> [--hardlink] [--overwrite]
+python3 -m bubble vault audit-fs [--root /]
+python3 -m bubble vault remove <name> <version> <tag>
 
-# Vault operations
-python3 bubble.py vault add requests [--version X.Y.Z] [--recursive]
-python3 bubble.py vault add npm:lodash          # npm packages
-python3 bubble.py vault list
-python3 bubble.py vault index
+# long-lived shells
+python3 -m bubble shell create <name> [pkg ...]
+python3 -m bubble shell add <name> <pkg ...>
+python3 -m bubble shell remove <name> <pkg ...>
+python3 -m bubble shell list
+python3 -m bubble shell delete <name>
+python3 -m bubble shell exec <name> -- <cmd ...>
+python3 -m bubble shell activate <name>          # prints sourceable path
 
-# Scan scripts for dependencies
-python3 bubble.py scan my_script.py
-python3 bubble.py scan my_script.py --resolve   # check against vault
+# run a script
+python3 -m bubble run <script.py> [--isolate] [--scope versions.toml] [--lock out.lock] [args...]
+python3 -m bubble up  <script.py> [--keep] [args...]    # ephemeral; retired
 
-# Run in isolated bubble
-python3 bubble.py up my_script.py [--keep] [args...]
-python3 bubble.py up ./my_project/              # package directory
-
-# Cleanup
-python3 bubble.py down [--all]
-
-# Diagnostics
-python3 bubble.py doctor
+# self-portrait
+python3 -m bubble probe [--show]
+python3 -m bubble host
 ```
 
-### bubble_cli.py (user-friendly wrapper)
+The README's installation path is `bubble.pyz` — a stdlib-only zipapp built from the package.
+
+## Tests
 
 ```bash
-bubble <script.py> [args...]        # run in isolation
-bubble get <package> [...]          # pre-cache packages (implies --recursive)
-bubble get npm:lodash               # pre-cache npm package
-bubble status                       # vault contents
-bubble doctor                       # diagnose environment
-bubble clean                        # dissolve all bubbles
-bubble preflight <script.py>        # offline readiness check
-
-# Flags
---yes / -y      auto-confirm everything
---quiet / -q    suppress output (agent mode)
---keep          preserve bubble dir after run
+python3 tests/run.py                 # all
+python3 tests/run.py 10_breakers     # filter by tier
+python3 tests/run.py --no-md         # skip RESULTS.md gallery
 ```
 
-## Development Notes
+Each test runs as a subprocess with a fresh `BUBBLE_HOME` tempdir, stages synthetic packages via `tests/_common.stage_fake_package`, and emits a JSON result line that the runner aggregates into `tests/RESULTS.md`. Hermetic, offline, no PyPI access.
 
-- **No package manager, build system, or test framework** — pure stdlib Python
-- **No dependencies** — must work with only Python stdlib
-- Installation: `cp bubble.py /usr/local/bin/bubble && chmod +x`
-- Environment variables: `BUBBLE_HOME` (default `~/.bubble`), `BUBBLE_ENGINE`, `PREFIX`, `TMPDIR`
-- The error loop pattern handles dynamic imports: run → catch `ModuleNotFoundError` → pull missing module → retry
-- Path shims bridge Termux/proot environments by mapping expected paths (e.g., `/etc/ssl/certs`) to actual locations
-- Module-level assembly: only symlinks needed modules, not entire packages
+## Environment variables
+
+- `BUBBLE_HOME` — default `~/.bubble`
+- `BUBBLE_PYPI_INDEX` — default `https://pypi.org/simple`
+- `BUBBLE_AUTOFAULT`, `BUBBLE_AUTOFETCH`, `BUBBLE_SCOPE`, `BUBBLE_VERBOSE` — meta-finder install-from-env knobs
+- `BUBBLE_QUIET` — suppress non-error output
+
+## Development notes
+
+- Stdlib only. No package manager, no build system, no test framework — these are non-goals.
+- The error loop in `run/runner.py` and the meta-finder's `_fault_to_pypi` both handle dynamic imports: catch `ModuleNotFoundError`, vault-fetch the missing dist, retry.
+- `docs/integrity.md` is the unbuilt design for vault tamper-resistance (the second half of the security work; provenance is closed, integrity is not).
+- The three docs in `docs/` (`membrane.md`, `siblings.md`, `kithing.md`) are part of the project's voice; read them before rewriting prose in the README or here.
+
+## `legacy/`
+
+`legacy/bubble.py` (3,039 lines) and `legacy/bubble_cli.py` (the TTY wrapper) are the original monolith — schema v1, pip-driven, with `doctor`, `preflight`, an npm path, and a JS scanner that haven't been ported to `bubble/`. Preserved as exhibit, not maintained. See `legacy/README.md`.
