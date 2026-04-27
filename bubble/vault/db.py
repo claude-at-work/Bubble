@@ -91,11 +91,14 @@ CREATE INDEX IF NOT EXISTS idx_module_imports_name   ON module_imports(module_na
 
 -- Each package's top-level importable names (from top_level.txt or directory scan)
 -- This is the bridge from Python's import namespace to PyPI's distribution namespace.
+-- import_sha256 binds the import name to the bytes the vault will serve under it:
+-- computed once at vault-add time over the verified subtree, deterministic.
 CREATE TABLE IF NOT EXISTS top_level (
-    package     TEXT NOT NULL,
-    version     TEXT NOT NULL,
-    wheel_tag   TEXT NOT NULL,
-    import_name TEXT NOT NULL,      -- the importable top-level Python name
+    package        TEXT NOT NULL,
+    version        TEXT NOT NULL,
+    wheel_tag      TEXT NOT NULL,
+    import_name    TEXT NOT NULL,   -- the importable top-level Python name
+    import_sha256  TEXT,            -- content hash of the subtree this row claims
     FOREIGN KEY (package, version, wheel_tag)
         REFERENCES packages(name, version, wheel_tag) ON DELETE CASCADE
 );
@@ -166,6 +169,13 @@ def init_db() -> None:
         _drop_old_schema(conn)
 
     conn.executescript(SCHEMA)
+
+    # top_level.import_sha256 was added after the first vaults shipped; ALTER in
+    # for older DBs. New DBs got the column from the SCHEMA above.
+    tl_cols = {row[1] for row in conn.execute("PRAGMA table_info(top_level)")}
+    if "import_sha256" not in tl_cols:
+        conn.execute("ALTER TABLE top_level ADD COLUMN import_sha256 TEXT")
+
     conn.execute(
         "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)",
         (str(SCHEMA_VERSION),),

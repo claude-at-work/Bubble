@@ -50,7 +50,7 @@ bubble/
 
 ```sql
 packages         -- PK (name, version, wheel_tag); sha256, source, vault_path, has_native
-top_level        -- import_name → (package, version, wheel_tag); the import-name → dist-name bridge
+top_level        -- import_name → (package, version, wheel_tag); + import_sha256 over the subtree
 dependencies     -- per-package deps                       (FK → packages)
 modules          -- per-package module index               (FK → packages)
 module_imports   -- per-module import lists                (FK → packages)
@@ -58,6 +58,8 @@ shells           -- long-lived named bubbles
 bubbles          -- ephemeral bubbles (legacy path)
 schema_meta      -- version sentinel
 ```
+
+`top_level.import_sha256` is the cryptographic edge between the import name and the bytes the vault serves. Computed once at vault-add over a deterministic walk of the asserted subtree. `top_level.txt` is verified against the staged tree at add-time — a name asserted but absent is dropped. Cross-distribution collisions (two distros claiming `cv2`) are recorded in `bubble.vault.store.top_level_contentions` for audit.
 
 ## Commands
 

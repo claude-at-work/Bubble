@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -29,6 +30,25 @@ from . import db, store, metadata as meta
 
 PYPI_INDEX = os.environ.get("BUBBLE_PYPI_INDEX", "https://pypi.org/simple")
 USER_AGENT = f"bubble/0.3.0 (+stdlib; python {sys.version_info.major}.{sys.version_info.minor})"
+
+
+# files.pythonhosted.org is the canonical artifact CDN PyPI's simple-API
+# redirects wheel downloads to. Allow that plus the index host. A poisoned
+# simple-API response that tries to redirect downloads to file:// or an
+# attacker-controlled host fails closed before any bytes are fetched.
+_ALLOWED_DOWNLOAD_HOSTS = frozenset({
+    urllib.parse.urlparse(PYPI_INDEX).hostname or "pypi.org",
+    "files.pythonhosted.org",
+})
+
+
+def _download_url_ok(url: str) -> bool:
+    """Validate that an index-supplied download URL is https and on a known host."""
+    try:
+        parts = urllib.parse.urlparse(url)
+    except ValueError:
+        return False
+    return parts.scheme == "https" and parts.hostname in _ALLOWED_DOWNLOAD_HOSTS
 
 
 # ───────────────────────────── wheel filenames ──────────────────────────
@@ -208,6 +228,8 @@ def _download(url: str, dest: Path, expected_sha256: str) -> Path:
     the source is non-canonical or tampered — we'd rather fail loudly."""
     if not expected_sha256:
         raise ValueError(f"refusing to download without a published sha256: {url}")
+    if not _download_url_ok(url):
+        raise ValueError(f"refusing to download from non-allowlisted URL: {url}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     h = hashlib.sha256()
