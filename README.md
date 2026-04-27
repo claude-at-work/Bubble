@@ -32,7 +32,7 @@ The same vision, a more direct mechanism.
 
 Three primitives:
 
-1. **Vault** (`~/.bubble/vault/`) — content-addressed package store keyed by `(name, version, wheel_tag)`. Atomic writes via staging+rename. SQLite index. Every package's top-level import names are indexed so `import yaml` resolves to the vault's `pyyaml` entry.
+1. **Vault** (`~/.bubble/vault/`) — content-addressed package store keyed by `(name, version, wheel_tag)`. Atomic writes via staging+rename. SQLite index. Every package's top-level import names are indexed (so `import yaml` resolves to the vault's `pyyaml` entry), and each indexed name carries a sha256 over the bytes it serves — the bridge from import name to artifact is a cryptographic edge, not just a lookup.
 
 2. **Meta-path finder** (`bubble.meta_finder.VaultFinder`) — sits on `sys.meta_path`. Intercepts top-level import misses, looks up the name in the vault, hands a path to the standard `PathFinder`. Optionally fetches from PyPI on vault miss. Optionally records the closure as a lockfile.
 
@@ -201,6 +201,7 @@ These are not technical documentation. They are evidence that artifacts in this 
 - **PEP 508 markers (extras, environment markers) aren't fully evaluated** in transitive resolution. Most real-world cases work; edge cases produce extra-broad closures.
 - **dlmopen multi-call needs GIL-state management** that isn't shipped yet. Single-call substrate isolation works; long-running multi-call sessions need the extra plumbing.
 - **The probe→consult→record loop is closed in miniature, but not yet load-bearing.** `bubble.host` reads what the probe wrote, the meta-finder records PyPI fetch failures, the next `bubble host` invocation surfaces them. Substrate selection at alias-resolution time doesn't yet branch on the menu (every alias still routes to in-process). The next move closes the second half of the loop.
+- **Integrity is closed at the import→artifact edge, not yet at the vault→bytes edge.** Each `top_level` row binds an import name to a sha256 over the subtree it claims, computed at vault-add. Cross-distribution name collisions (e.g. `opencv-python` and `opencv-python-headless` both claiming `cv2`) are recorded as audit entries. What's still open: per-file integrity verification on read, signed manifests, and the vault-wide audit story sketched in [`docs/integrity.md`](docs/integrity.md).
 
 ---
 
