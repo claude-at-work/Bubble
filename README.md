@@ -1,5 +1,7 @@
 # BUBBLE
 
+Bubble runs Python scripts without setting up an environment per project. One shared cache on your machine holds every package you've ever needed; the first import fetches it from PyPI, every later import is a disk read. Two versions of the same library can coexist in one program if your code gives each its own name. The whole thing is a single file built only with Python's standard library — nothing to install before you install it. Useful when "set up the environment first" isn't an option: autonomous scripts, locked-down systems, no-internet machines, or stitching together libraries that disagree about versions.
+
 **Demand-paged dependency isolation for Python.**
 
 A content-addressed package vault, plus a meta-path finder that intercepts unresolved imports and serves them from the vault — fetching from PyPI on miss. No venv. No requirements file. The script declares what it needs by importing it.
