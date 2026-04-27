@@ -218,6 +218,20 @@ class VaultFinder(importlib.abc.MetaPathFinder):
         from .scanner.py import IMPORT_TO_DIST
         from . import host
         dist = IMPORT_TO_DIST.get(name, name)
+
+        # Cross-run memory. _fetch_failed holds the in-process view; host.toml
+        # holds the persistent view. Without this read the function records
+        # but never consults — every new process re-asks PyPI for a dist
+        # that already failed and writes another duplicate row.
+        if (host.is_known_failure("pypi_fetch_failed", dist) or
+                host.is_known_failure("pypi_no_compatible_release", dist)):
+            self._fetch_failed.add(name)
+            if self._verbose:
+                sys.stderr.write(
+                    f"[bubble] skip fetch for {name!r}: known failure on this host\n"
+                )
+            return None
+
         if self._verbose:
             extra = f" (dist={dist})" if dist != name else ""
             sys.stderr.write(f"[bubble] vault miss for {name!r}, fetching from PyPI{extra}…\n")
