@@ -202,7 +202,12 @@ def pick_release(
     return {"version": version, "score": score, "kind": kind, "parsed": parsed, "file": f}
 
 
-def _download(url: str, dest: Path, expected_sha256: Optional[str] = None) -> Path:
+def _download(url: str, dest: Path, expected_sha256: str) -> Path:
+    """Download `url` to `dest`, verifying SHA-256. Hash is mandatory:
+    PyPI's Simple API publishes a hash for every file, so a missing hash means
+    the source is non-canonical or tampered — we'd rather fail loudly."""
+    if not expected_sha256:
+        raise ValueError(f"refusing to download without a published sha256: {url}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     h = hashlib.sha256()
@@ -215,10 +220,27 @@ def _download(url: str, dest: Path, expected_sha256: Optional[str] = None) -> Pa
                 h.update(chunk)
                 out.write(chunk)
     actual = h.hexdigest()
-    if expected_sha256 and actual != expected_sha256:
+    if actual != expected_sha256:
         dest.unlink(missing_ok=True)
         raise ValueError(f"sha256 mismatch for {url}: expected {expected_sha256}, got {actual}")
     return dest
+
+
+def _safe_extract_zip(zf: zipfile.ZipFile, dest: Path) -> None:
+    """Reject zip-slip / absolute-path / symlink members before extraction.
+    Uses the 3.12+ data filter when available; otherwise validates members manually."""
+    dest_resolved = dest.resolve()
+    for info in zf.infolist():
+        name = info.filename
+        if name.startswith("/") or ".." in Path(name).parts or "\x00" in name:
+            raise ValueError(f"unsafe archive member: {name!r}")
+        # Reject symlinks in zips (rare but possible via external_attr)
+        if (info.external_attr >> 16) & 0o170000 == 0o120000:
+            raise ValueError(f"symlink in zip not permitted: {name!r}")
+        target = (dest / name).resolve()
+        if dest_resolved != target and dest_resolved not in target.parents:
+            raise ValueError(f"archive member escapes target: {name!r}")
+    zf.extractall(dest)
 
 
 def fetch_into_vault(
@@ -270,7 +292,7 @@ def fetch_into_vault(
     try:
         if pick["kind"] == "wheel":
             with zipfile.ZipFile(artifact) as zf:
-                zf.extractall(staged)
+                _safe_extract_zip(zf, staged)
         else:
             # sdist — fallback to pip if available
             if not shutil.which("pip3") and not shutil.which("pip"):

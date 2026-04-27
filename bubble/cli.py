@@ -344,6 +344,7 @@ def cmd_up(args: argparse.Namespace) -> int:
     from .scanner import py as scanner_py, resolver as resolver_mod
     from .run import assemble as assemble_mod, runner
     import hashlib
+    import uuid
     from datetime import datetime
     db.init_db()
     script = Path(args.script).resolve()
@@ -370,9 +371,10 @@ def cmd_up(args: argparse.Namespace) -> int:
             print(f"fetch: {len(plan.resolved)} now resolved, "
                   f"{len(plan.missing)} still missing")
 
-    # Stage 4: assemble bubble
+    # Stage 4: assemble bubble. uuid4 in the digest avoids collisions between
+    # concurrent runs of the same script (timestamp resolution is not enough).
     bubble_id = hashlib.sha256(
-        f"{script}{datetime.now().isoformat()}".encode()
+        f"{script}{datetime.now().isoformat()}{uuid.uuid4()}".encode()
     ).hexdigest()[:12]
     bubble_dir = config.BUBBLES_DIR / bubble_id
     env = assemble_mod.assemble(plan, bubble_dir)
