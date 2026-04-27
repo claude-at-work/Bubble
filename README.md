@@ -8,7 +8,7 @@ A content-addressed package vault, plus a meta-path finder that intercepts unres
 bubble run script.py
 ```
 
-That's it. First run pages from PyPI; subsequent runs hit the warm vault. Lockfiles are recordings of what actually loaded, not declarations of what might. Multiple versions of the same package can coexist in one process via aliases.
+That's it. First run pages from PyPI; subsequent runs hit the warm vault. Lockfiles are recordings of what actually loaded, not declarations of what might. Multiple versions of the same package can coexist in one process via aliases — and the isolation is temporal as well as spatial: a late-arriving alias doesn't reach back into an already-loaded import.
 
 ---
 
@@ -93,6 +93,8 @@ Confirmed: three `click` versions side-by-side in one process. Distinct `Command
 Confirmed-with-pattern: `pydantic` v1 + v2, asymmetric (one default + one alias). Tier-2 libraries that don't do absolute self-imports inside metaclasses work cleanly.
 
 Demonstrated-as-reachable: `numpy` 1.26 + `numpy` 2.4 in one process via dlmopen + isolated libpython (kernel/glibc machinery, not a Python feature). Single-call works; multi-call needs GIL-state management — sketched, not yet shipped.
+
+Confirmed-temporal: a late-arriving alias doesn't retroactively perturb an already-loaded module. Isolation holds across the process lifetime, not just across the namespace. (Test: `tests/10_breakers/test_late_alias_does_not_corrupt_earlier.py`.)
 
 ### Recorded lockfiles
 
